@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
 ```
 
 ```{r}
@@ -21,10 +22,9 @@ library(ggplot2)
 ```
 
 ```{r}
-bts_lyrics <- read_csv("archive/lyrics-v12.csv")
+bts_lyrics <- read_csv("lyrics-v12.csv")
 bts_lyrics
 ```
-
 
 ```{r}
 bts_lyrics <- bts_lyrics %>% 
@@ -65,14 +65,19 @@ tidy_bts_lyrics <- tidy_bts_lyrics %>%
 
 tidy_bts_lyrics
 ```
+
 ```{r}
-# Counting word frequencies
-tidy_bts_lyrics %>%
+# Counting word frequencies for the whole discography
+words <- tidy_bts_lyrics %>%
   count(word, sort = TRUE) 
+
+# Counting words by album
+album_words <- tidy_bts_lyrics %>% 
+  count(eng_album_title, word, sort = TRUE)
 ```
+
 ```{r}
-tidy_bts_lyrics %>%
-  count(word, sort = TRUE) %>%
+words %>%
   #only words mentioned over 800 times in the novels
   filter(n > 300) %>%
   #we reorder words by number of mentions
@@ -83,3 +88,39 @@ tidy_bts_lyrics %>%
   labs(y = NULL)
 ```
 
+```{r}
+# how many total words there are in each album
+
+total_words <- tidy_bts_lyrics %>% 
+  count(eng_album_title, word, sort = TRUE)  %>% 
+  #we group by books to sum all the totals in the n column of book_words
+  group_by(eng_album_title) %>% 
+  #we create a column called total with the total of words by book
+  summarise(total = sum(n))
+```
+
+```{r}
+album_words <- left_join(album_words, total_words)
+album_words
+```
+
+```{r}
+album_words <- album_words %>%
+  #we add a column for term_frequency in each novel
+  mutate(term_frequency = n/total)
+
+album_words
+```
+
+#### Fifth step: visualize distribution in collection
+
+Let's make a plot to see how words are distributed in the whole Jane Austen's collection
+
+```{r}
+#we calculate the distribution and put it in the x axis, filling by book
+ggplot(album_words, aes(term_frequency)) +
+  #we create the bars histogram
+  geom_histogram(show.legend = TRUE) +
+  #we set the limit for the term frequency in the x axis
+  xlim(NA, 0.0009)
+```
