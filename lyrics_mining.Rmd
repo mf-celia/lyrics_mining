@@ -71,11 +71,8 @@ tidy_bts_lyrics
 words <- tidy_bts_lyrics %>%
   count(word, sort = TRUE) 
 
-# Counting words by album
-album_words <- tidy_bts_lyrics %>% 
-  count(eng_album_title, word, sort = TRUE)
+words
 ```
-
 ```{r}
 words %>%
   #only words mentioned over 800 times in the novels
@@ -89,18 +86,28 @@ words %>%
 ```
 
 ```{r}
+# Counting words by album
+album_words <- tidy_bts_lyrics %>% 
+  count(eng_album_title, word) 
+
+album_words
+```
+
+
+```{r}
 # how many total words there are in each album
 
-total_words <- tidy_bts_lyrics %>% 
-  count(eng_album_title, word, sort = TRUE)  %>% 
+total_words <- album_words  %>% 
   #we group by books to sum all the totals in the n column of book_words
   group_by(eng_album_title) %>% 
   #we create a column called total with the total of words by book
   summarise(total = sum(n))
+
+total_words
 ```
 
 ```{r}
-album_words <- left_join(album_words, total_words)
+album_words <- left_join(album_words, total_words, by = "eng_album_title")
 album_words
 ```
 

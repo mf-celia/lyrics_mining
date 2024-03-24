@@ -1,0 +1,923 @@
+---
+title: "An Analysis of BTS Song Albums from 2013 to 2023"
+author: "Andrea Baños and Celia Muñoz"
+date: "2024-03-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Research Question
+
+In order to undertake this project on the analysis of BTS songs from 2013 to 2023, four text mining techniques will be applied, which include TF-IDF, Sentiment Analysis, the use of N-grams, and Topic Modelling, as taught in class.
+
+## Load the main libraries
+
+```{r}
+rm(list = ls())
+
+library(tidyverse)
+library(tidytext)
+library(ggplot2)
+library(wordcloud)
+library(viridis)
+library(reshape2)
+library(tidyr)
+library(forcats)
+library(igraph)
+library(ggraph)
+
+```
+
+
+## Download the data and select the important variables
+
+```{r}
+bts_lyrics <- read.csv("lyrics-v12.csv")
+
+
+bts_lyrics <- bts_lyrics %>% 
+  mutate(year = year(album_rd)) %>% 
+  filter(remix == FALSE) %>% # removing those songs that are remixes
+  distinct(eng_track_title, .keep_all = TRUE) %>%  # removing duplicated songs
+  select(eng_album_title, year, album_seq, eng_track_title, lyrics) %>%
+  na.omit() %>% 
+  mutate(lyrics = iconv(lyrics, from = "", to = "UTF-8", sub = " "), # correcting a minor error
+         lyrics = gsub("’", "'", lyrics))  # I noticed that there was a different character in lyrics and in the stop words that did not allow to remove them properly.
+
+```
+
+### Relocate the lyrics in rows
+
+```{r}
+bts_row_lyrics <- bts_lyrics %>%
+  separate_rows(lyrics, sep = "\n") %>%
+  group_by(eng_track_title) %>%
+  mutate(line_number = row_number()) %>%
+  ungroup() 
+
+bts_row_lyrics
+
+```
+
+### Tokenizing
+
+```{r}
+tidy_bts_lyrics <- bts_row_lyrics %>%
+  unnest_tokens(word, lyrics, drop = FALSE)
+
+tidy_bts_lyrics
+
+```
+
+### Filtering stopwords
+
+```{r}
+tidy_bts_lyrics <- tidy_bts_lyrics %>%
+  anti_join(stop_words)
+
+tidy_bts_lyrics
+```
+
+### Counting word frequencies
+
+```{r}
+bts_words <- tidy_bts_lyrics %>%
+  count(word, sort = TRUE)
+
+bts_words
+```
+
+```{r}
+bts_words %>%
+  filter(n > 200) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word)) +
+  geom_col() +
+  labs(y = NULL) # mensajes contradictorios amor y no puedo, quiero y no
+
+```
+
+### Proportion of words
+
+```{r}
+tidy_bts_prop <- tidy_bts_lyrics %>% 
+  count(word, sort = TRUE) %>% 
+  mutate(proportion = n / sum(n))
+
+tidy_bts_prop # Esto sería la proporción de palabras respecto al total de palabras, lo correcto es lo de abajo
+```
+
+## Term Frequency
+
+```{r}
+# First step
+album_words <- tidy_bts_lyrics %>%
+  filter(year >= 2020) %>% # using only the most recent albums
+  count(eng_album_title, word, sort = TRUE) # by album
+
+album_words
+```
+
+```{r}
+# Second step
+total_album_words <- album_words %>% 
+  group_by(eng_album_title) %>% 
+  summarize(total = sum(n))
+
+total_album_words
+```
+
+```{r}
+# Third step
+album_words <- left_join(album_words, total_album_words)
+album_words
+```
+
+```{r}
+# Fourth step
+album_words <- album_words %>%
+  mutate(term_frequency = n/total)
+
+album_words
+```
+
+```{r}
+# Fifth step -> visualization
+ggplot(album_words, aes(term_frequency)) +
+  geom_histogram(show.legend = TRUE) +
+  xlim(NA, 0.001)
+```
+
+```{r}
+# Sixth step: visualization by album 
+ggplot(album_words, aes(term_frequency, fill = eng_album_title)) +
+  geom_histogram(show.legend = TRUE) +
+  xlim(NA, 0.001) +
+  facet_wrap(~eng_album_title, ncol = 2, scales = "free_y")
+```
+
+
+### Zipf's Law
+
+```{r}
+freq_by_rank <- album_words %>% 
+  group_by(eng_album_title) %>% 
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+freq_by_rank
+
+freq_by_rank %>%
+  filter(eng_album_title == "Dynamite (DayTime Version)") # for example
+```
+
+Visualization of Zipf's Law: -> no es útil
+
+```{r}
+freq_by_rank %>% 
+  ggplot(aes(rank, term_frequency, color = eng_album_title)) + 
+  geom_line(linewidth = 1.1, alpha = 0.8, show.legend = TRUE)
+
+```
+
+**-\> Logarithmic scales** are just non linear scaling: instead of scaling by orders of magnitude summing numbers (+1 would be 1,2,3,4...), each step scales multiplying by a fixed quantity (x 10 would be 1,10,100,1000..). So that the plot can be better appreciated.
+
+Plotting this way, we can see with our eyes how an inversely proportional relationship will have a constant, negative slope from right to left.
+
+```{r}
+freq_by_rank %>% 
+  ggplot(aes(rank, term_frequency, color = eng_album_title)) + 
+  geom_line(size = 1.1, alpha = 0.8, show.legend = TRUE) + 
+  scale_x_log10() +
+  scale_y_log10()
+```
+
+## TF-IDF
+
+```{r}
+album_tf_idf <- album_words %>%
+  bind_tf_idf(word, eng_album_title, n)
+
+album_tf_idf
+```
+
+Higher TF-IDF words: -> no hacemos graph porque aunque hagamos slice_max, no se ven bien las canciones mostrando el tf-idf
+
+```{r}
+album_tf_idf %>%
+  select(-total) %>%
+  arrange(desc(tf_idf))
+
+```
+
+```{r}
+library(forcats)
+
+album_tf_idf %>%
+  group_by(eng_album_title) %>%
+  #choose maximum number of words
+  slice_max(tf_idf, n = 5) %>%
+  ungroup() %>%
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = eng_album_title)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~eng_album_title, ncol = 2, scales = "free") +
+  labs(x = "tf-idf", y = NULL)
+```
+
+
+Here we can see the words sorted from highest to lowest TF-IDF per album.
+
+Finally, we will filter within "song_tf_idf" those words that, although not contained within the usual stop words, do not seem useful for our analysis:
+
+```{r}
+bts_stopwords <- tibble(word = c("na", "da", "la", "ay", "ooh", "ugh", "ayy",
+                                 "dyn", "wo", "woah", "mm", "yeah", "hey"))
+
+album_words <- anti_join(album_words, bts_stopwords, 
+                           by = "word")
+
+album_tf_idf <- album_words %>%
+  bind_tf_idf(word, eng_album_title, n)
+
+album_tf_idf %>%
+  select(-total) %>%
+  arrange(desc(tf_idf))
+```
+
+## Sentiment Analysis
+
+First of all, we will check if the BTS songs' have positive or negative words in their tracks:
+
+```{r}
+bing_positive <- get_sentiments("bing") %>% 
+  filter(sentiment == "positive")
+
+bing_negative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+
+bing_bts_positive <- tidy_bts_lyrics %>% 
+    filter(eng_track_title == "Dynamite" | eng_track_title == "Permission to Dance") %>% # he añadido permission to dance también
+    inner_join(bing_positive) %>%
+    group_by(eng_track_title) %>% 
+    count(word, sort = TRUE) %>% 
+    arrange(eng_track_title)
+
+bing_bts_negative <- tidy_bts_lyrics %>% 
+    filter(eng_track_title == "Dynamite" | eng_track_title == "Permission to Dance") %>% # he añadido permission to dance también
+    inner_join(bing_negative) %>%
+    group_by(eng_track_title) %>% 
+    count(word, sort = TRUE) %>% 
+    arrange(eng_track_title)
+
+bing_bts_positive
+bing_bts_negative
+```
+
+As we can observe, BTS uses more positive than negative words in the song "Dynamite". Probably, within those positive words, there might be another sentiment they want to convey:
+
+In the song Permission to dance the opposite happens, we find more negative word coincidences with respect to Dynamite. 
+
+```{r}
+get_sentiments("nrc") %>% 
+  distinct(sentiment) # we will filter by fear
+
+nrc_fear <- get_sentiments("nrc") %>% 
+  filter(sentiment == "fear")
+
+nrc_bts <- tidy_bts_lyrics %>% 
+    filter(eng_track_title == "Dynamite" | eng_track_title == "Permission to Dance") %>%
+    inner_join(nrc_fear) %>%
+    group_by(eng_track_title) %>% 
+    count(word, sort = TRUE)
+
+nrc_bts
+```
+```{r}
+nrc_anticipation <- get_sentiments("nrc") %>% 
+  filter(sentiment == "anticipation") # now we use anticipation
+
+nrc_bts <- tidy_bts_lyrics %>% 
+    filter(eng_track_title == "Dynamite" | eng_track_title == "Permission to Dance") %>%
+    inner_join(nrc_anticipation) %>%
+    group_by(eng_track_title) %>% 
+    count(word, sort = TRUE) %>% 
+    arrange(eng_track_title)
+
+nrc_bts
+```
+
+
+The concepts of fear and anticipation are the ones that appear most frequently in the song "Dynamite".
+
+```{r}
+tidy_bts_lyrics %>%
+    filter(eng_track_title == "Dynamite" | eng_track_title == "Permission to Dance") %>%
+    inner_join(nrc_anticipation) %>%
+    group_by(eng_track_title) %>% 
+    count(word, sort = TRUE) %>% 
+    filter(n >= 2) %>% 
+    mutate(word = reorder(word, n)) %>% 
+    ggplot(aes(x = n, y = word, fill = eng_track_title)) +
+    geom_col() +
+    labs(y = NULL) +
+    facet_wrap(~ eng_track_title, ncol = 2, scales = "free") # usign facets for visualising words in both songs
+
+
+```
+
+Positive and negative sentiments in the BTS songs:
+
+```{r}
+bts_sentiment <- tidy_bts_lyrics %>%
+  inner_join(get_sentiments("bing")) %>% 
+  filter(year >= 2020) %>% # filtering for analysing only the most recent songs
+  count(eng_album_title, index = line_number %/% 100, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+bts_sentiment
+
+```
+
+Visualization of sentiment words: -> no entiendo por qué se me queda así de mal
+
+```{r}
+ggplot(bts_sentiment, aes(index, sentiment, fill = eng_album_title)) +
+  geom_col(show.legend = TRUE) +
+  facet_wrap(~eng_album_title, ncol = 2, scales = "free_x") +
+  theme(legend.text = element_text(size = 8))
+
+# there were too many albums and not enough space to view the chart. I have filtered (previous chunk) by the most recent albums and reduced the legend size
+
+```
+
+Comparing lexicons in the song "Dynamite":
+
+```{r}
+dynamite <- tidy_bts_lyrics %>% 
+  filter(eng_album_title == "Dynamite (DayTime Version)")
+
+dynamite
+
+```
+
+Using Afinn.
+
+```{r}
+afinn_dynamite <- dynamite %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = line_number %/% 5) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+afinn_dynamite
+
+```
+
+Bing and nrc.
+
+```{r}
+bing_and_nrc_dynamite <- bind_rows(
+  #Bing
+  dynamite %>% 
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing"),
+  #NRC
+  dynamite %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative")) # sentiment, not emotions
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = line_number %/% 5, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+bing_and_nrc_dynamite
+
+```
+
+Visualization of the three methods:
+
+```{r}
+bind_rows(afinn_dynamite, 
+          bing_and_nrc_dynamite) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+
+```
+
+There more positive than negative sentiments in all methods, but the Afinn method collects the most negative sentiments and the NRC method has fewer negative sentiments, while the Bing method has no negative sentiments. In conclusion, there are higher and lower blocks of sentiments.
+
+Most common positive and negative words:
+
+```{r}
+bing_bts_counts <- tidy_bts_lyrics %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+bing_bts_counts
+
+```
+
+The standout word above all others is "love", indicating a predominantly positive sentiment in BTS songs. However, we will explore later whether this sentiment may be biased toward a more negative language, discussing heartbreak or love.
+
+A visualization plot:
+
+```{r}
+bing_bts_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 20) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+
+```
+
+The most positive song within each album:
+
+```{r}
+bts_word_counts <- tidy_bts_lyrics %>%
+  group_by(eng_album_title, eng_track_title) %>%
+  summarize(words = n())
+
+bts_word_counts
+
+tidy_bts_lyrics %>%
+  semi_join(bing_positive) %>%
+  group_by(eng_album_title, eng_track_title) %>%
+  summarize(positivewords = n()) %>%
+  left_join(bts_word_counts, by = c("eng_album_title", "eng_track_title")) %>%
+  mutate(ratio = positivewords/words) %>%
+  slice_max(ratio, n = 1) %>% 
+  ungroup()
+
+```
+
+Now, let's explore the most frequently used words by BTS in their songs from 2013 to 2023 using word clouds.
+
+```{r}
+colors <- viridis_pal()(10) # Viridis color scale
+
+tidy_bts_lyrics %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 50, colors = colors))
+
+```
+
+Finally, in this sentiment analysis, we will compare the positive and negative words of BTS in word clouds.
+
+```{r}
+tidy_bts_lyrics %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("pink", "skyblue"),
+                   max.words = 100)
+
+```
+
+We can verify that the word "love" stands out above any other word in the songs with a positive sentiment.
+
+## N-grams
+
+```{r}
+bts_bigrams <- bts_lyrics %>%
+  unnest_tokens(bigram, lyrics, token = "ngrams", n = 2) %>%
+  #we filter all N/A outputs
+  filter(!is.na(bigram))
+
+bts_bigrams
+```
+We can use count to examine the most frequent bigrams:
+
+```{r}
+bts_bigrams %>%
+  count(bigram, sort = TRUE)
+```
+
+Before we remove unnecessary words, we should split the phrases into two columns. We can do this by using a function called "separate" and breaking the phrases wherever there's a blank space. Let's call this new data "bigrams_separated."
+
+```{r}
+bigrams_separated <- bts_bigrams %>%
+  #we separate each bigram in two columns, word1 and word2
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigrams_separated
+```
+
+Second, we filter stopwords in both columns and save into bigrams_filtered.
+
+```{r}
+#we filter all words included in the word column in stop_words
+bigrams_filtered <- bigrams_separated %>%
+  filter(!word1 %in% stop_words$word,
+         !word1 %in% bts_stopwords$word) %>% # we also filter for BTS specific stopwords
+  filter(!word2 %in% stop_words$word,
+         !word2 %in% bts_stopwords$word)
+
+bigrams_filtered
+```
+Third, we repeat the count to see the difference.
+
+```{r}
+# new bigram counts:
+bigram_counts <- bigrams_filtered %>% 
+  count(word1, word2, sort = TRUE) 
+
+bigram_counts
+```
+To reunite bigrams again in one single column.
+
+```{r}
+bigrams_united <- bigrams_filtered %>%
+  unite(bigram, word1, word2, sep = " ")
+
+bigrams_united
+```
+### Conditional n-grams
+
+We may want to condition the n-grams to obtain just those containing a specific word. In this case, we want to identify references to **love** or related issues. In addition, we include the year of publication of each album to see whether there is a trend over time.
+
+```{r}
+love_bigrams <- bigrams_filtered %>%
+  filter(word1 == "love" | word2 == "love") %>%
+  count(eng_album_title, year, word1, word2, sort = TRUE) %>% 
+  arrange(year)
+
+head(love_bigrams)
+```
+```{r}
+love_bigrams %>%
+  group_by(year) %>% 
+  summarise(
+    n = sum(n)
+  ) %>% 
+  ggplot(aes(x = as.integer(year), y = n)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Year", y = "Occurrences", title = "Evolution of 'love' Bigrams") +
+  scale_x_continuous(breaks = love_bigrams$year)  
+```
+
+
+### Combination with TF-IDF
+
+Likewise, we can combine n-grams analysis with TF-IDF analysis to get a very informative output. In this case, 
+
+```{r}
+#we use the bigrams united dataframe
+bigram_tf_idf <- bigrams_united %>%
+  filter(year >= 2020) %>% # counting justs the most recent albums
+  #we count by album
+  count(eng_album_title, bigram) %>%
+  #we perform tf_idf
+  bind_tf_idf(bigram, eng_album_title, n) %>%
+  #we arrange in descending order
+  arrange(desc(tf_idf))
+
+bigram_tf_idf
+```
+If we filter just by album, we obtain the more distinctive n-grams for each of them: bigrams that are more present in this book than in others and make it different.
+
+Let's plot it.
+
+```{r}
+bigram_tf_idf %>%
+  group_by(eng_album_title) %>%
+  #choose maximum number of words
+  slice_max(tf_idf, n = 5) %>%
+  ungroup() %>%
+  ggplot(aes(tf_idf, fct_reorder(bigram, tf_idf), fill = eng_album_title)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~eng_album_title, ncol = 2, scales = "free") +
+  labs(x = "tf-idf", y = NULL)
+```
+### Using n-grams for context
+
+During sentiment analysis, we faced a challenge when dealing with negative phrases. The word 'love' typically implies positivity unless it's preceded by a negation word. Utilising bigrams allows us to examine the surrounding context of a word from its left side. To address this, let's compile a vector containing various negation words and revisit our analysis.
+
+```{r}
+negation_words <- c("not", "no", "never", "without")
+
+negated_words <- bigrams_separated %>%
+  filter(word1 %in% negation_words) %>%
+  count(word1, word2, sort = TRUE)
+
+negated_words
+```
+
+With AFINN, we can identify words within the BTS corpus that were negated but still were associated to a sentiment on their own. Now we construct a dataframe containing these words by performing an inner_join with AFINN:
+
+```{r}
+AFINN <- get_sentiments("afinn")
+
+negated_words <- bigrams_separated %>%
+  filter(word1 %in% negation_words) %>%
+  inner_join(AFINN, by = c(word2 = "word")) %>%
+  count(word1, word2, value, sort = TRUE)
+
+negated_words
+```
+
+It's important to take into account the words that had the most significant impact in the "wrong" direction. To calculate this, we can multiply their values by the frequency of their occurrence in the collection.
+
+```{r}
+frequent_negated_words <- negated_words %>%
+  mutate(contribution = n * value) %>%
+  arrange(desc(abs(contribution))) %>%
+  mutate(word2 = reorder(word2, contribution)) %>%
+  head(20)
+
+frequent_negated_words
+```
+
+Here we have the confusing contribution of each word preceded by a negation word.
+
+```{r}
+frequent_negated_words %>%
+  ggplot(aes(n * value, word2, fill = n * value > 0)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = "Sentiment value * number of occurrences",
+       y = "Words preceded by negation words")
+```
+
+We can display this information for each negative word that we have considered
+
+```{r}
+negated_words %>%
+  mutate(contribution = n * value,
+         sign = if_else(value > 0, "postive", "negative")) %>%
+  group_by(word1) %>% 
+  top_n(15, abs(contribution)) %>%
+  ungroup() %>%
+  ggplot(aes(y = reorder_within(word2, contribution, word1), 
+             x = contribution, 
+             fill = sign)) +
+  geom_col() + 
+  scale_y_reordered() + 
+  facet_wrap(~ word1, scales = "free") + 
+  labs(y = 'Words preceeded by a negation word',
+       x = "Contribution (Sent value * number of mentions)",
+       title = "Most common pos or neg words to follow negations")
+```
+
+### Visualizing a network of bigrams
+
+A graph is formed by interconnected nodes, with nodes representing words and edges symbolizing the relationships between them within the corpus. These edges, or relationships, can possess diverse numerical weights. The construction of a graph hinges on three variables: "from" indicating the originating node of an edge; "to" specifying the destination node of an edge; and "weight" denoting the numerical value assigned to each edge.
+
+We can use the bigram_counts dataframe to construct a graph showing the most frequent word combinations.
+
+```{r}
+bigram_counts
+
+bigram_for_graph <- bigram_counts %>%
+  filter(n > 10) %>%
+  graph_from_data_frame()
+
+bigram_for_graph
+```
+We visualize the combinations that appear more than 10 times and we see a cloud of connected dots where we can observe frequent combinations such as live-love-fake, hip-hop, etc.
+
+```{r}
+set.seed(2017)
+
+#layout is used to prevent nodes from overlapping
+ggraph(bigram_for_graph, layout = "fr") +
+  geom_edge_link() +
+  geom_node_point() +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 0)
+```
+We can use the three arguments of ggraph to introduce settings and improve our graph. The arrows are more visible according to the frequency of word combinations. We confirm that the most frequent are live-love-fake, specially love-fake and hip-hop.
+
+```{r}
+set.seed(2020)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_for_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.05, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+```
+
+## Topic Modelling
+
+Topic Modeling involves a text mining technique aimed at forming natural groups of items within a corpus, especially in situations where the desired categorization isn't immediately apparent.
+
+### Latent Dirichlet Allocation
+
+LDA is among the most widely used algorithms for constructing a topic model from a corpus. It takes a Document-Term Matrix as input and generates an LDA object as output, representing the model's understanding of the relationships between documents, topics, and words.
+
+From the previous steps in the project we had a tidy dataframe containing information about albums, words, and their respective word counts. To transform this dataframe into a DocumentTermMatrix format, we can utilize tidytext's functionality to convert a table where each row represents a single token into the desired format.
+
+```{r}
+album_word_counts <- tidy_bts_lyrics %>%
+  filter(year >= 2020) %>% 
+  anti_join(stop_words) %>% 
+  anti_join(bts_stopwords) %>% # filtering the BTS stopwords to avoid their specific expressions
+  count(eng_album_title, eng_track_title, word, sort = TRUE) %>% 
+  unite(album_song, eng_album_title, eng_track_title)
+
+album_word_counts
+```
+
+### Apply LDA function to BTS albums
+
+```{r}
+bts_dtm <- album_word_counts %>%
+  cast_dtm(album_song, word, n) # from tidy format to document term matrix
+
+bts_dtm
+```
+Our BTS albums collection exhibits a sparsity of 96%, signifying a very high degree of diversity in the vocabulary. This indicates a promising prospect for the success of topic modeling.
+
+```{r}
+bts_lda <- LDA(bts_dtm, k = 6, control = list(seed = 1234))
+bts_lda # this is our LDA object
+```
+
+### Tidy it back
+
+We can get the LDA object back to the tidy format (topic, term, beta) to make further analysis.
+
+```{r}
+bts_topics <- tidy(bts_lda)
+bts_topics
+```
+
+We can see that in all cases there is always a topic for which the word has a very different `beta` value. That's probably the topic associated to the book it comes from.
+
+Let's find the 5 most common words for each topic and plot them.
+
+```{r}
+top_terms <- bts_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms
+```
+```{r}
+top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered()
+```
+
+### Each song to its album
+
+We have seen which words correspond to each topic, but can we put the songs back together in the correct albums? Can we guess which album a song comes from?
+
+To do this, we need to know the probability of a document (chapter in this case) to contain a topic. It is, `gamma`.
+
+```{r}
+bts_gamma <- tidy(bts_lda, matrix = "gamma")
+bts_gamma
+```
+Each song has a likelihood (`gamma`) of containing one of the two topics, it is, of belonging to one of the albums.
+
+Let's separate title and chapter number again:
+
+```{r}
+bts_gamma <- bts_gamma %>%
+  separate(document, c("album", "song"), sep = "_", convert = TRUE)
+
+bts_gamma
+```
+
+And now, let's make a plot:
+
+```{r}
+# reorder titles in order of topic 1, topic 2, etc before plotting
+bts_gamma %>%
+  mutate(title = reorder(album, gamma * topic)) %>%
+  ggplot(aes(factor(topic), gamma)) +
+  geom_boxplot() +
+  facet_wrap(~ album) +
+  labs(x = "topic", y = expression(gamma))
+```
+First, we should have a look at the topic that has been most associated with each song of the album.
+
+```{r}
+song_classifications <- bts_gamma %>%
+  group_by(album, song) %>%
+  #we use slice max to order by gamma
+  slice_max(gamma) %>%
+  ungroup()
+
+song_classifications
+```
+
+We can see that there are several songs for the Proof album associated to topic 4.
+
+And finally, see which songs have been misidentified according to **the consensus for each album-topic**: the topic most songs in the album have been assigned to.
+
+For example, we have established that Proof is topic 4 because the most common associated topic for its songs is number 4. Let's count **how many songs have been associated to a topic other than 4.**
+
+First, we create a dataframe just with two columns: the album and its consensus topic.
+
+```{r}
+bts_album_topics <- song_classifications %>%
+  count(album, topic) %>%
+  group_by(album) %>%
+  slice_max(n, n = 1) %>% 
+  ungroup() %>%
+  transmute(consensus = album, topic)
+
+bts_album_topics
+```
+
+Second, we check with an inner join if any chapter is assigned to a topic different from the consensus.
+
+```{r}
+song_classifications %>%
+  inner_join(bts_album_topics, by = "topic") %>%
+  filter(album != consensus)
+```
+
+13 songs in Proof are associated to a topic different than 4. This is a larger margin of error. 
+
+### Augment
+
+We may want to find **which words in each album were assigned to which topic**. This is the job of the [`augment()`](https://generics.r-lib.org/reference/augment.html) function.
+
+
+```{r}
+assignments <- augment(bts_lda, data = bts_dtm)
+assignments
+```
+
+Now, imagine that a word has been assigned to a topic, but belongs to a song assigned to a different topic. We can combine this `assignments` table with the consensus album titles to find which words were "incorrectly" classified.
+
+```{r}
+assignments <- assignments %>%
+  #we separate again the chapter number from the title
+  separate(document, c("album", "song"), 
+           sep = "_", convert = TRUE) %>%
+  #we compare the topic with the .topic
+  inner_join(bts_album_topics, by = c(".topic" = "topic"))
+
+assignments
+```
+
+We can make a plot showing how often words from an album were assigned to a topic other than its consensus.
+
+```{r}
+library(scales)
+
+assignments %>%
+  count(album, consensus, wt = count) %>%
+  mutate(across(c(album, consensus), ~str_wrap(., 20))) %>%
+  group_by(album) %>%
+  #we create a column with the percentage of assignments
+  mutate(percent = n / sum(n)) %>%
+  #plot settings
+  ggplot(aes(consensus, album, fill = percent)) +
+  geom_tile() +
+  scale_fill_gradient2(high = "darkred", label = percent_format()) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = "Album words were assigned to",
+       y = "Album words came from",
+       fill = "% of assignments")
+```
+
+We already knew that some words of Proof were causing problems. What were the most commonly mistaken words?
+
+```{r}
+wrong_words <- assignments %>%
+  #we filter by words coming from a title which is not the consensus (in book_topics)
+  filter(album != consensus)
+
+wrong_words
+```
+
+We take this dataframe already filtered by wrongly assigned words and print the `consensus` next to the album title to observe the misalignment.
+
+```{r}
+wrong_words %>%
+  count(album, consensus, term, wt = count) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>% 
+  filter(album == "Proof")
+```
+
+Here we can see all words that were assigned to Proof when they were really coming from other albums (MAP OF THE SOUL:7, Butter). This happens because they appeared more often in MAP OF THE SOUL:7 and the model gives priority.
+
