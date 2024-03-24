@@ -1,0 +1,426 @@
+---
+title: "An Analysis of BTS Song Albums from 2013 to 2023"
+author: "Andrea Baños and Celia Muñoz"
+date: "2024-03-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Research Question
+
+In order to undertake this project on the analysis of BTS songs from 2013 to 2023, four text mining techniques will be applied, which include TF-IDF, Sentiment Analysis, the use of N-grams, and Topic Modelling, as taught in class.
+
+## Load the main libraries
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(ggplot2)
+library(wordcloud)
+library(viridis)
+library(reshape2)
+
+```
+
+
+## Download the data and select the important variables
+
+```{r}
+bts_lyrics <- read.csv("lyrics-v12.csv")
+library(tidyverse)
+bts_lyrics <- bts_lyrics %>% 
+  select(c(eng_album_title, album_rd, album_seq, eng_track_title, lyrics))
+
+```
+
+### Correcting a minor error
+
+```{r}
+bts_lyrics$lyrics <- iconv(bts_lyrics$lyrics, from = "", to = "UTF-8", sub = " ")
+
+```
+
+### Relocate the lyrics in rows
+
+```{r}
+bts_row_lyrics <- bts_lyrics %>%
+  separate_rows(lyrics, sep = "\n") %>%
+  group_by(eng_track_title) %>%
+  mutate(line_number = row_number()) %>%
+  ungroup()
+
+bts_row_lyrics
+
+```
+
+### Tokenizing
+
+```{r}
+tidy_bts_lyrics <- bts_row_lyrics %>%
+  unnest_tokens(word, lyrics, drop = FALSE)
+
+tidy_bts_lyrics
+
+```
+
+### Filtering stopwords
+
+```{r}
+tidy_bts_lyrics <- tidy_bts_lyrics %>%
+  anti_join(stop_words)
+
+tidy_bts_lyrics
+
+```
+
+### Counting word frequencies
+
+```{r}
+bts_words <- tidy_bts_lyrics %>%
+  count(word, sort = TRUE)
+bts_words
+
+```
+
+```{r}
+tidy_bts_lyrics %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 300) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word)) +
+  geom_col() +
+  labs(y = NULL) # mensajes contradictorios amor y no puedo, quiero y no
+
+```
+
+### Proportion of words
+
+```{r}
+tidy_bts_prop <- tidy_bts_lyrics %>% 
+  count(word, sort = TRUE) %>% 
+  mutate(proportion = n / sum(n))
+
+tidy_bts_prop # Esto sería la proporción de palabras respecto al total de palabras, lo correcto es lo de abajo
+
+```
+
+## Term Frequency
+
+```{r}
+# First step
+song_words <- tidy_bts_lyrics %>%
+  count(eng_album_title, word, sort = TRUE) # by song
+song_words
+
+# Second step
+total_song_words <- song_words %>% 
+  group_by(eng_album_title) %>% 
+  summarize(total = sum(n))
+
+# Third step
+song_words <- left_join(song_words, total_song_words)
+song_words
+
+# Fourth step
+song_words <- song_words %>%
+  mutate(term_frequency = n/total)
+song_words
+
+# Fifth step -> visualization
+ggplot(song_words, aes(term_frequency)) +
+  geom_histogram(show.legend = TRUE) +
+  xlim(NA, 0.001)
+
+# Sixth step: visualization by album -> no se ve nada
+ggplot(song_words, aes(term_frequency, fill = eng_album_title)) +
+  geom_histogram(show.legend = TRUE) +
+  xlim(NA, 0.001) +
+  facet_wrap(~eng_album_title, ncol = 2, scales = "free_y")
+
+```
+
+### Zipf's Law
+
+```{r}
+freq_by_rank <- song_words %>% 
+  group_by(eng_album_title) %>% 
+  mutate(rank = row_number()) %>%
+  ungroup()
+freq_by_rank
+
+freq_by_rank %>%
+  filter(eng_album_title == "Dynamite (DayTime Version)") # for example
+```
+
+Visualization of Zipf's Law: -> no es útil
+
+```{r}
+freq_by_rank %>% 
+  ggplot(aes(rank, term_frequency, color = eng_album_title)) + 
+  geom_line(linewidth = 1.1, alpha = 0.8, show.legend = TRUE)
+
+```
+
+## TF-IDF
+
+```{r}
+song_tf_idf <- song_words %>%
+  bind_tf_idf(word, eng_album_title, n)
+
+song_tf_idf
+
+```
+
+Higher TF-IDF words: -> no hacemos graph porque aunque hagamos slice_max, no se ven bien las canciones mostrando el tf-idf
+
+```{r}
+song_tf_idf %>%
+  select(-total) %>%
+  arrange(desc(tf_idf))
+
+```
+
+Here we can see the words sorted from highest to lowest TF-IDF per album.
+
+Finally, we will filter within "song_tf_idf" those words that, although not contained within the usual stop words, do not seem useful for our analysis:
+
+```{r}
+bts_stopwords <- tibble(word = c("na", "da", "la", "ay", "ooh", "ugh", "ayy",
+                                 "dyn", "wo", "woah", "mm"))
+
+song_words <- anti_join(song_words, bts_stopwords, 
+                           by = "word")
+
+song_tf_idf <- song_words %>%
+  bind_tf_idf(word, eng_album_title, n)
+
+song_tf_idf %>%
+  select(-total) %>%
+  arrange(desc(tf_idf))
+
+```
+
+## Sentiment Analysis
+
+First of all, we will check if the BTS songs' have positive or negative words in their tracks:
+
+```{r}
+bing_positive <- get_sentiments("bing") %>% 
+  filter(sentiment == "positive")
+
+bing_negative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+
+bing_bts <- tidy_bts_lyrics %>% 
+    filter(eng_track_title == "Dynamite") %>%
+    inner_join(bing_positive) %>%
+    count(word, sort = TRUE)
+
+# si quieres añadir alguna más que sea conocida
+
+```
+
+As we can observe, BTS uses more positive than negative words in the song "Dynamite". Probably, within those positive words, there might be another sentiment they want to convey:
+
+```{r}
+get_sentiments("nrc") %>% 
+  distinct(sentiment) # we will filter by fear and anticipation
+
+nrc_fear <- get_sentiments("nrc") %>% 
+  filter(sentiment == "fear")
+
+nrc_bts <- tidy_bts_lyrics %>% 
+    filter(eng_track_title == "Dynamite") %>%
+    inner_join(nrc_fear) %>%
+    count(word, sort = TRUE)
+nrc_bts
+
+nrc_anticipation <- get_sentiments("nrc") %>% 
+  filter(sentiment == "anticipation")
+
+nrc_bts <- tidy_bts_lyrics %>% 
+    filter(eng_track_title == "Dynamite") %>%
+    inner_join(nrc_anticipation) %>%
+    count(word, sort = TRUE)
+nrc_bts
+
+```
+
+The concepts of fear and anticipation are the ones that appear most frequently in the song "Dynamite".
+
+```{r}
+tidy_bts_lyrics %>% 
+    filter(eng_track_title == "Dynamite") %>%
+    inner_join(nrc_anticipation) %>%
+    count(word, sort = TRUE) %>% 
+    filter(n >= 8) %>%
+    mutate(word = reorder(word, n)) %>%
+    ggplot(aes(x = n, y = word)) +
+    geom_col() +
+    labs(y = NULL)
+
+```
+
+Positive and negative sentiments in the BTS songs:
+
+```{r}
+bts_sentiment <- tidy_bts_lyrics %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(eng_album_title, index = line_number %/% 100, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+bts_sentiment
+
+```
+
+Visualization of sentiment words: -> no entiendo por qué se me queda así de mal
+
+```{r}
+ggplot(bts_sentiment, aes(index, sentiment, fill = eng_album_title)) +
+  geom_col(show.legend = TRUE) +
+  facet_wrap(~eng_album_title, ncol = 2, scales = "free_x")
+
+```
+
+Comparing lexicons in the song "Dynamite":
+
+```{r}
+dynamite <- tidy_bts_lyrics %>% 
+  filter(eng_album_title == "Dynamite (DayTime Version)")
+
+dynamite
+
+```
+
+Using Afinn.
+
+```{r}
+afinn_dynamite <- dynamite %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = line_number %/% 5) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+afinn_dynamite
+
+```
+
+Bing and nrc.
+
+```{r}
+bing_and_nrc_dynamite <- bind_rows(
+  #Bing
+  dynamite %>% 
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing"),
+  #NRC
+  dynamite %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative")) # sentiment, not emotions
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = line_number %/% 5, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+bing_and_nrc_dynamite
+
+```
+
+Visualization of the three methods:
+
+```{r}
+bind_rows(afinn_dynamite, 
+          bing_and_nrc_dynamite) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+
+```
+
+There more positive than negative sentiments in all methods, but the Afinn method collects the most negative sentiments and the NRC method has fewer negative sentiments, while the Bing method has no negative sentiments. In conclusion, there are higher and lower blocks of sentiments.
+
+Most common positive and negative words:
+
+```{r}
+bing_bts_counts <- tidy_bts_lyrics %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+bing_bts_counts
+
+```
+
+The standout word above all others is "love", indicating a predominantly positive sentiment in BTS songs. However, we will explore later whether this sentiment may be biased toward a more negative language, discussing heartbreak or love.
+
+A visualization plot:
+
+```{r}
+bing_bts_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 20) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+
+```
+
+The most positive song within each album:
+
+```{r}
+bts_word_counts <- tidy_bts_lyrics %>%
+  group_by(eng_album_title, eng_track_title) %>%
+  summarize(words = n())
+
+bts_word_counts
+
+tidy_bts_lyrics %>%
+  semi_join(bing_positive) %>%
+  group_by(eng_album_title, eng_track_title) %>%
+  summarize(positivewords = n()) %>%
+  left_join(bts_word_counts, by = c("eng_album_title", "eng_track_title")) %>%
+  mutate(ratio = positivewords/words) %>%
+  slice_max(ratio, n = 1) %>% 
+  ungroup()
+
+```
+
+Now, let's explore the most frequently used words by BTS in their songs from 2013 to 2023 using word clouds.
+
+```{r}
+colors <- viridis_pal()(10) # Viridis color scale
+
+tidy_bts_lyrics %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 50, colors = colors))
+
+```
+
+Finally, in this sentiment analysis, we will compare the positive and negative words of BTS in word clouds.
+
+```{r}
+tidy_bts_lyrics %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("pink", "skyblue"),
+                   max.words = 100)
+
+```
+
+We can verify that the word "love" stands out above any other word in the songs with a positive sentiment.
+
+## N-grams con Sentiment Analysis
+
+## Topic Modelling
